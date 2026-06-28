@@ -8,13 +8,15 @@
 
 ```
 olist-analysis/
-├── README.md                  # 项目说明
+├── README.md                        # 项目说明
+├── ipynb/
+│   └── olist_analysis.ipynb         # Python数据清洗与预处理
 ├── sql/
-│   └── olist_analysis.sql     # 全部 SQL 分析代码
+│   └── olist_analysis.sql           # 全部SQL分析代码
 ├── dashboard/
-│   └── olist_dashboard.pbix   # Power BI 仪表盘文件
+│   └── olist_dashboard.pbix         # Power BI仪表盘文件
 └── data/
-    └── data_source.md         # 数据来源说明（原始数据见 Kaggle）
+    └── data_source.md               # 数据来源说明（原始数据见Kaggle）
 ```
 
 ---
