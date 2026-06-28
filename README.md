@@ -94,7 +94,7 @@ olist-analysis/
 
 ## 🗂️ 数据说明
 
-原始数据集较大（约 300MB），不直接上传至仓库。
+原始数据集较大，不直接上传至仓库。
 
 请前往 Kaggle 下载：
 👉 https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
