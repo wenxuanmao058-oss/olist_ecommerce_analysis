@@ -37,7 +37,8 @@ olist-analysis/
 
 ### 2. 用户价值分析（RFM 模型）
 - 基于 Recency（最近购买）、Frequency（购买频次）、Monetary（消费金额）构建用户分层
-- 发现 F 维度全为 1（复购率接近 0%），调整为 RM 两维度打分
+- 发现 F 维度接近 1（复购率接近 3%），-- 注：复购率仅3%左右，90%+用户frequency=1，NTILE对此分箱有伪区分风险，
+-- 已知局限，分层结果解读时需结合avg_frequency趋同这一现象说明
 - 使用 NTILE 窗口函数分档，将用户分为高价值、一般价值、低价值三层
 
 ### 3. 商品类目分析
@@ -102,3 +103,9 @@ olist-analysis/
 👉 https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
 
 下载后将 CSV 文件导入 MySQL，运行 `sql/olist_analysis.sql` 即可复现全部分析。
+
+ ## 复盘：customer_id vs customer_unique_id
+   
+   最初分析误用了customer_id（订单级标识）计算用户数和复购率，导致复购率被
+   严重低估（显示为接近0%）。经排查发现Olist数据集中customer_unique_id才是
+   真实用户标识，修正后复购率约为3%，RFM分层与用户画像随之更新为更准确的版本。
