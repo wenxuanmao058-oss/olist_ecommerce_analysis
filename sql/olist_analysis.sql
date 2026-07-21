@@ -13,7 +13,8 @@ FROM
 #订单数order_count
 SELECT COUNT(DISTINCT order_id) FROM final_orders_info order_count;
 #用户数customer_id
-SELECT COUNT(DISTINCT customer_id) FROM final_orders_info customer_count;
+SELECT COUNT(DISTINCT customer_unique_id) FROM final_orders_info customer_count;
+SELECT COUNT(DISTINCT customer_id) FROM final_orders_info customer_count;#有复购
 #客单价 avg_order = GMV /订单数
 SELECT
 (SELECT SUM(payment_value) 
@@ -25,103 +26,129 @@ FROM
 SELECT
 (SELECT SUM(payment_value) FROM (SELECT DISTINCT order_id,payment_value FROM final_orders_info) gmv1) AS GMV,
 (SELECT COUNT(DISTINCT order_id) FROM final_orders_info) AS order_count,
-(SELECT COUNT(DISTINCT customer_id) FROM final_orders_info) AS customer_count,
+(SELECT COUNT(DISTINCT customer_unique_id) FROM final_orders_info) AS customer_count,
 ((SELECT SUM(payment_value) FROM (SELECT DISTINCT order_id,payment_value FROM final_orders_info) gmv2) 
 / (SELECT COUNT(DISTINCT order_id) FROM final_orders_info order_count2)) AS avg_order_value;
 
+DESC final_orders_info;
+SELECT MAX(LENGTH(product_id)) FROM final_orders_info;
+ALTER TABLE final_orders_info
+    MODIFY COLUMN order_id VARCHAR(64),
+    MODIFY COLUMN customer_id VARCHAR(64),
+    MODIFY COLUMN product_id VARCHAR(64),
+    MODIFY COLUMN seller_id VARCHAR(64),
+    MODIFY COLUMN customer_unique_id VARCHAR(64),
+    MODIFY COLUMN order_status VARCHAR(32),
+    MODIFY COLUMN product_category_name VARCHAR(64),
+    MODIFY COLUMN customer_city VARCHAR(64),
+    MODIFY COLUMN customer_state VARCHAR(32),
+    MODIFY COLUMN shipping_limit_date DATETIME;
+
+#视图优化
+CREATE VIEW vu_orders_info AS SELECT DISTINCT order_id,payment_value,customer_id ,customer_unique_id
+FROM final_orders_info WHERE payment_value IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS dim_overview AS
-WITH distinct_order AS (SELECT DISTINCT order_id,payment_value,customer_id 
-						FROM final_orders_info WHERE payment_value IS NOT NULL)
 SELECT SUM(payment_value) AS gmv,
 COUNT(DISTINCT order_id) AS order_count,
-COUNT(DISTINCT customer_id) AS customer_count,
+COUNT(DISTINCT customer_unique_id) AS customer_count,
 SUM(payment_value) / COUNT(DISTINCT order_id) AS avg_order_value
-FROM distinct_order;# ------------------------------------------------总览
+FROM vu_orders_info;# ------------------------------------------------总览
 
-
+#视图优化
+CREATE OR REPLACE VIEW vu_orders_info2 AS 
+SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id, customer_unique_id
+FROM final_orders_info;
 ##趋势分析
 #月销售趋势
 CREATE TABLE dim_monthly_trend AS 
-WITH t AS (
-			SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id
-			FROM final_orders_info
-		   )#去重
 SELECT 
     DATE_FORMAT(order_purchase_timestamp, '%Y-%m') AS order_month,
     SUM(payment_value) AS monthly_gmv,
     COUNT(DISTINCT order_id) AS monthly_order_count,
-    COUNT(DISTINCT customer_id) AS monthly_customer
-FROM t
+    COUNT(DISTINCT customer_unique_id) AS monthly_customer
+FROM vu_orders_info2
 WHERE payment_value IS NOT NULL
 GROUP BY order_month
 ORDER BY order_month;#----------------------------------------------月度趋势
 
 
 ##价值分析，RFM模型，谁是高价值用户
-SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id
+SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id,customer_unique_id
 FROM final_orders_info;#去重
 
 SELECT MAX(order_purchase_timestamp) FROM final_orders_info;#全局截止日期
 
-SELECT customer_id,DATEDIFF((SELECT MAX(order_purchase_timestamp) FROM final_orders_info),
+SELECT customer_unique_id,DATEDIFF((SELECT MAX(order_purchase_timestamp) FROM final_orders_info),
 							 MAX(order_purchase_timestamp)) recency_date
-FROM final_orders_info GROUP BY customer_id;#用户最近下单的差值（天数）
+FROM final_orders_info GROUP BY customer_unique_id;#用户最近下单的差值（天数）
 
-SELECT customer_id,COUNT(DISTINCT order_id),SUM(payment_value) FROM 
+SELECT customer_unique_id,COUNT(DISTINCT order_id),SUM(payment_value) FROM 
 (
-SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id
+SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_unique_id
 FROM final_orders_info
-) distinct_order GROUP BY customer_id;#用户周期内下单次数和消费金额
+) distinct_order GROUP BY customer_unique_id;#用户周期内下单次数和消费金额
 
-WITH distinct_order AS
-(SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id
-FROM final_orders_info)
-SELECT customer_id,
+
+
+SELECT customer_unique_id,
 DATEDIFF((SELECT MAX(order_purchase_timestamp) FROM final_orders_info),MAX(order_purchase_timestamp)) AS recency_days,
 COUNT(DISTINCT order_id) AS frequency,
 SUM(payment_value) AS sum_payment
-FROM distinct_order
-GROUP BY customer_id;#CTE写法，rfm
+FROM vu_orders_info2
+GROUP BY customer_unique_id;#CTE写法，rfm
+#复购率
+WITH t AS (SELECT customer_unique_id,COUNT(DISTINCT(order_id))
+FROM final_orders_info
+GROUP BY customer_unique_id
+HAVING COUNT(DISTINCT(order_id)) >1)
+SELECT ROUND((SELECT COUNT(*)FROM t)/
+			(SELECT COUNT(DISTINCT(customer_unique_id)) FROM final_orders_info)*100,2) repurchase_pct;
+
 
 #RFM打分
-WITH distinct_order AS
-(SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id
-FROM final_orders_info),
-rfm_order AS (SELECT customer_id,
+ WITH rfm_order AS (SELECT customer_unique_id,
 DATEDIFF((SELECT MAX(order_purchase_timestamp) FROM final_orders_info),MAX(order_purchase_timestamp)) AS recency_days,
 COUNT(DISTINCT order_id) AS frequency,
 SUM(payment_value) AS sum_payment
-FROM distinct_order
-GROUP BY customer_id),
-rfm_scored AS (SELECT customer_id,recency_days,frequency,sum_payment,
+FROM vu_orders_info2
+GROUP BY customer_unique_id),
+rfm_scored AS (SELECT customer_unique_id,recency_days,frequency,sum_payment,
 6 - NTILE(5) OVER (ORDER BY recency_days ASC) AS r_score,#越近分越高
-NTILE(5) OVER (ORDER BY sum_payment ASC) AS m_score FROM rfm_order )#价值越高分越大
-SELECT *,CASE WHEN r_score >= 4 AND m_score >= 4 THEN '高价值用户'
-			  WHEN r_score >= 3 OR m_score >= 3  THEN '一般价值用户'
-			  ELSE '低价值用户' END AS user_segment
+NTILE(5) OVER (ORDER BY frequency ASC) AS f_score, 
+NTILE(5) OVER (ORDER BY sum_payment ASC) AS m_score
+FROM rfm_order )#价值越高分越大
+SELECT *,CASE WHEN r_score >= 4 AND f_score >= 4 AND m_score >= 4 THEN '高价值用户'
+              WHEN r_score >= 3 OR f_score >= 3 OR m_score >= 3  THEN '一般价值用户'
+              ELSE '低价值用户' END AS user_segment
 FROM rfm_scored
-WHERE sum_payment IS NOT NULL;
+WHERE sum_payment IS NOT NULL;#-- 注：复购率仅3%左右，90%+用户frequency=1，NTILE对此分箱有伪区分风险，
+-- 已知局限，分层结果解读时需结合avg_frequency趋同这一现象说明
+
+
 
 #用户分层
 CREATE TABLE dim_rfm_segment 
-WITH distinct_order AS
-(SELECT DISTINCT order_id, order_purchase_timestamp, payment_value, customer_id
-FROM final_orders_info),
-rfm_order AS (SELECT customer_id,
-DATEDIFF((SELECT MAX(order_purchase_timestamp) FROM final_orders_info),MAX(order_purchase_timestamp)) AS recency_days,
-COUNT(DISTINCT order_id) AS frequency,
-SUM(payment_value) AS sum_payment
-FROM distinct_order
-GROUP BY customer_id),
-rfm_scored AS (SELECT customer_id,recency_days,frequency,sum_payment,
-6 - NTILE(5) OVER (ORDER BY recency_days ASC) AS r_score,#越近分越高
-NTILE(5) OVER (ORDER BY sum_payment ASC) AS m_score FROM rfm_order  WHERE sum_payment IS NOT NULL)#价值越高分越大
-SELECT CASE WHEN r_score >= 4 AND m_score >= 4 THEN '高价值用户'
-			  WHEN r_score >= 3 OR m_score >= 3  THEN '一般价值用户'
-			  ELSE '低价值用户' END AS user_segment,
+WITH rfm_order AS (
+    SELECT customer_unique_id,
+    DATEDIFF((SELECT MAX(order_purchase_timestamp) FROM final_orders_info), MAX(order_purchase_timestamp)) AS recency_days,
+    COUNT(DISTINCT order_id) AS frequency,
+    SUM(payment_value) AS sum_payment
+    FROM vu_orders_info2
+    GROUP BY customer_unique_id),
+rfm_scored AS (
+    SELECT customer_unique_id, recency_days, frequency, sum_payment,
+    6 - NTILE(5) OVER (ORDER BY recency_days ASC) AS r_score,
+    NTILE(5) OVER (ORDER BY frequency ASC) AS f_score,     -- 新增：F打分
+    NTILE(5) OVER (ORDER BY sum_payment ASC) AS m_score 
+    FROM rfm_order WHERE sum_payment IS NOT NULL)
+SELECT CASE WHEN r_score >= 4 AND f_score >= 4 AND m_score >= 4 THEN '高价值用户'
+              WHEN r_score >= 3 OR f_score >= 3 OR m_score >= 3  THEN '一般价值用户'
+              ELSE '低价值用户' END AS user_segment,
 COUNT(*) AS user_count,
 ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2) AS pct,
 ROUND(AVG(recency_days), 0) AS avg_recency,
+ROUND(AVG(frequency), 2) AS avg_frequency,
 ROUND(AVG(sum_payment), 2) AS avg_payment
 FROM rfm_scored
 GROUP BY user_segment
@@ -213,10 +240,13 @@ FROM cumulative_pct
 WHERE cum_pct <= 80   #只看贡献了前80%营收的品类
 ORDER BY total_revenue DESC;#-------------------------------------------------二八法则
 
+#索引
+CREATE INDEX idx_state ON final_orders_info(customer_state);
+CREATE INDEX idx_purchase_date ON final_orders_info(order_purchase_timestamp);
 
 ##地域GMV分析
 SELECT COUNT(DISTINCT order_id) AS order_count,
-COUNT(DISTINCT customer_id) AS customer_count,
+COUNT(DISTINCT customer_unique_id) AS customer_count,
 customer_state,customer_city,
 ROUND(SUM(payment_value),2 )AS gmv,
 ROUND(AVG(payment_value),2) AS avg_order_gmv
@@ -255,7 +285,7 @@ ORDER BY ontime_pct DESC,avg_score DESC;#各地区的准时率和评分关系
 
 
 SELECT COUNT(DISTINCT order_id) AS order_count,
-COUNT(DISTINCT customer_id) AS customer_count,
+COUNT(DISTINCT customer_unique_id) AS customer_count,
 customer_state,customer_city,
 ROUND(SUM(payment_value),2) AS gmv,
 AVG(review_score) AS avg_score
@@ -265,7 +295,7 @@ GROUP BY customer_state,customer_city
 ORDER BY gmv DESC;#gmv与评分分析
 
 SELECT COUNT(DISTINCT order_id) AS order_count,
-COUNT(DISTINCT customer_id) AS customer_count,
+COUNT(DISTINCT customer_unique_id) AS customer_count,
 customer_state,customer_city,
 ROUND(SUM(payment_value),2) AS gmv,
 AVG(review_score) AS avg_score
@@ -297,4 +327,6 @@ FROM distinct_order
 WHERE payment_value IS NOT NULL
 GROUP BY customer_state
 ORDER BY gmv DESC;#----------------------------------------------------------地域物流综合分析
+
+
 
